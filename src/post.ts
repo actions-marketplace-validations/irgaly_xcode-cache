@@ -2,6 +2,7 @@ import * as core from '@actions/core'
 import * as cache from '@actions/cache'
 import * as glob from '@actions/glob'
 import * as exec from '@actions/exec'
+import * as github from '@actions/github'
 import * as fs from 'fs/promises'
 import { existsSync } from 'fs'
 import * as os from 'os'
@@ -10,6 +11,12 @@ import { getInput, debugLocalInput } from './input'
 import * as util from './util'
 import { MtimeJson } from './json'
 
+// Prevent upload chunk error, handle it as warning
+// > Error: Cache upload failed because file read failed with EBADF: bad file descriptor
+process.on('uncaughtException', e => {
+  core.info(`[warning] ${e.message}`);
+});
+
 post()
 
 async function post() {
@@ -17,10 +24,11 @@ async function post() {
     const debugLocal = await debugLocalInput()
     if (debugLocal) {
       util.fakeCache(cache)
+      util.fakeOctokit(github)
     }
     const runnerOs = process.env['RUNNER_OS']
     if (runnerOs != 'macOS') {
-      throw new Error(`setup-xcode supports only macOS, current host is ${runnerOs}`)
+      throw new Error(`xcode-cache supports only macOS, current host is ${runnerOs}`)
     }
     const input = getInput()
     core.info('Input parameters:')
@@ -28,56 +36,117 @@ async function post() {
       core.info(`  ${key} = ${value}`)
     })
     core.info('')
-    const tempDirectory = path.join(process.env['RUNNER_TEMP']!, 'irgaly-xcode-cache')
-    const derivedDataDirectory = await input.getDerivedDataDirectory()
-    const sourcePackagesDirectory = await input.getSourcePackagesDirectory()
-    if (!existsSync(derivedDataDirectory)) {
-      core.warning(`DerivedData directory not found:\n  ${derivedDataDirectory}`)
-      core.warning('Skipped storing mtime')
+    if (input.cacheReadOnly) {
+      core.info('Cache is read-only: will not save state for use in subsequent builds.')
     } else {
-      const derivedDataRestoreKey = core.getState('deriveddata-restorekey')
-      if (derivedDataRestoreKey == input.key) {
-        core.warning(`DerivedData cache has been restored with same key: ${input.key}`)
+      const tempDirectory = path.join(process.env['RUNNER_TEMP']!, 'irgaly-xcode-cache')
+      const derivedDataDirectory = await input.getDerivedDataDirectory()
+      const sourcePackagesDirectory = await input.getSourcePackagesDirectory()
+      if (!existsSync(derivedDataDirectory)) {
+        core.warning(`DerivedData directory not found:\n  ${derivedDataDirectory}`)
         core.warning('Skipped storing mtime')
       } else {
-        await storeMtime(
-          derivedDataDirectory,
-          sourcePackagesDirectory,
-          input.restoreMtimeTargets,
-          input.useDefaultMtimeTargets,
-          input.verbose
-        )
+        const derivedDataRestoreKey = core.getState('deriveddata-restorekey')
+        if (derivedDataRestoreKey == input.key) {
+          core.warning(`DerivedData cache has been restored with same key: ${input.key}`)
+          core.warning('Skipped storing mtime')
+        } else {
+          await storeMtime(
+            derivedDataDirectory,
+            sourcePackagesDirectory,
+            input.restoreMtimeTargets,
+            input.useDefaultMtimeTargets,
+            input.verbose
+          )
+        }
       }
-    }
-    core.info('')
-    if (sourcePackagesDirectory == null) {
-      core.info(`There are no SourcePackages directory in DerivedData, skip restoring SourcePackages`)
-    } else {
-      if (!existsSync(sourcePackagesDirectory)) {
-        core.warning(`SourcePackages directory not exists:\n  ${sourcePackagesDirectory}`)
-        core.warning('Skipped storing SourcePackages')
+      core.info('')
+      if (sourcePackagesDirectory == null) {
+        core.info(`There are no SourcePackages directory in DerivedData, skip storing SourcePackages`)
       } else {
-        await storeSourcePackages(
-          sourcePackagesDirectory,
-          await input.getSwiftpmCacheKey()
-        )
+        if (!existsSync(sourcePackagesDirectory)) {
+          core.warning(`SourcePackages directory not exists:\n  ${sourcePackagesDirectory}`)
+          core.warning('Skipped storing SourcePackages')
+        } else {
+          await storeSourcePackages(
+            sourcePackagesDirectory,
+            await input.getSwiftpmCacheKey()
+          )
+        }
       }
-    }
-    core.info('')
-    await storeDerivedData(
-      await input.getDerivedDataDirectory(),
-      sourcePackagesDirectory,
-      tempDirectory,
-      input.key
-    )
-    if (!debugLocal && existsSync(tempDirectory)) {
-      core.info(`Clean up: removing temporary directory: ${tempDirectory}`)
-      await fs.rm(tempDirectory, { recursive: true, force: true })
+      core.info('')
+      if (input.deleteUsedDerivedDataCache) {
+        await deleteUsedDerivedDataCache(
+          input.key,
+          input.token
+        )
+      } else {
+        core.info('Skipped deleting old DerivedData cache')
+      }
+      core.info('')
+      await storeDerivedData(
+        await input.getDerivedDataDirectory(),
+        sourcePackagesDirectory,
+        tempDirectory,
+        input.key
+      )
+      if (!debugLocal && existsSync(tempDirectory)) {
+        core.info(`Clean up: removing temporary directory: ${tempDirectory}`)
+        await fs.rm(tempDirectory, { recursive: true, force: true })
+      }
     }
   } catch (error) {
     if (error instanceof Error) {
       core.setFailed(error.message)
     }
+  }
+  // Workaround for node20 HTTPS + keepAlive + cache.saveCache() takes 2 mins bug
+  // https://github.com/actions/toolkit/issues/1643
+  // https://github.com/nodejs/node/issues/47228
+  process.exit(0)
+}
+
+async function deleteUsedDerivedDataCache(
+  key: string,
+  token: string
+) {
+  const restoreKey = core.getState('deriveddata-restorekey')
+  if (restoreKey == '') {
+    core.info(`DerivedData cache has not been restored.`)
+    core.info('Skipped deleting old DerivedData cache')
+  } else if (restoreKey == key) {
+    core.info(`DerivedData cache has been restored with same key:\n  ${key}`)
+    core.info('Skipped deleting old DerivedData cache')
+  } else {
+    const begin = new Date()
+    core.info(`[${util.getHHmmss(begin)}]: Deleting old DerivedData cache...`)
+    core.info(`Cache key:\n  ${restoreKey}`)
+    const octokit = github.getOctokit(token)
+    try {
+      const result = await octokit.request('DELETE /repos/{owner}/{repo}/actions/caches{?key,ref}', {
+        owner: github.context.repo.owner,
+        repo: github.context.repo.repo,
+        key: restoreKey,
+        ref: github.context.ref
+      })
+      core.info(`DELETE cache API Result:\n${JSON.stringify(result, null, '  ')}`)
+    } catch (error: any) {
+      if (error.status == 404) {
+        core.info('API returns "Cache is Not Found" response.')
+        core.info('This occurs when Cache belongs to other branch.')
+        core.info(`This is expected behavior and treat it as success, if this job is the first build of "${github.context.ref}" branch.`)
+        core.info(`DELETE cache API Result:\n${JSON.stringify(error, null, '  ')}`)
+      } else {
+        core.error('Error when deleting old DerivedData cache:')
+        core.error('Please be sure actions:write permission is granted for your token.')
+        core.error('See API Docs: https://docs.github.com/en/rest/actions/cache?apiVersion=2022-11-28#delete-github-actions-caches-for-a-repository-using-a-cache-key')
+        core.error('See GitHub Actions Permissions: https://docs.github.com/en/actions/using-jobs/assigning-permissions-to-jobs')
+        core.error(`${JSON.stringify(error, null, '  ')}`)
+        throw error
+      }
+    }
+    const end = new Date()
+    core.info(`[${util.getHHmmss(end)}]: ${util.elapsed(begin, end)}s`)
   }
 }
 
@@ -90,9 +159,10 @@ async function storeDerivedData(
   const restoreKey = core.getState('deriveddata-restorekey')
   if (restoreKey == key) {
     core.info(`DerivedData cache has been restored with same key:\n  ${key}`)
-    core.info('Skipped storing SourcePackages')
+    core.info('Skipped storing DerivedData')
   } else {
-    core.info(`Storing DerivedData...`)
+    const begin = new Date()
+    core.info(`[${util.getHHmmss(begin)}]: Storing DerivedData...`)
     core.info(`Cache path:\n  ${derivedDataDirectory}`)
     if (sourcePackagesDirectory != null) {
       if (
@@ -114,6 +184,8 @@ async function storeDerivedData(
         await fs.rename(backup, sourcePackagesDirectory)
       }
     }
+    const end = new Date()
+    core.info(`[${util.getHHmmss(end)}]: ${util.elapsed(begin, end)}s`)
   }
 }
 
@@ -126,7 +198,8 @@ async function storeSourcePackages(
     core.info(`SourcePackages cache has been restored with same key:\n  ${key}`)
     core.info('Skipped storing SourcePackages')
   } else {
-    core.info(`Storing SourcePackages...`)
+    const begin = new Date()
+    core.info(`[${util.getHHmmss(begin)}]: Storing SourcePackages...`)
     core.info(`Cache path:\n  ${sourcePackagesDirectory}`)
     try {
       await cache.saveCache([sourcePackagesDirectory], key)
@@ -138,6 +211,8 @@ async function storeSourcePackages(
       // then logging warning and treat as success.
       core.warning(`SourcePackages cache key exists, not saved: ${error}`)
     }
+    const end = new Date()
+    core.info(`[${util.getHHmmss(end)}]: ${util.elapsed(begin, end)}s`)
   }
 }
 
@@ -148,7 +223,8 @@ async function storeMtime(
   useDefaultMtimeTarget: boolean,
   verbose: boolean
 ) {
-  core.info(`Storing mtime...`)
+  const begin = new Date()
+  core.info(`[${util.getHHmmss(begin)}]: Storing mtime...`)
   let stored = 0
   const jsonFile = path.join(derivedDataDirectory, 'xcode-cache-mtime.json')
   const json: MtimeJson[] = []
@@ -157,12 +233,20 @@ async function storeMtime(
     "**/*.xib",
     "**/*.storyboard",
     "**/*.strings",
+    "**/*.xcstrings",
     "**/*.plist",
+    "**/*.intentdefinition",
+    "**/*.json",
     "**/*.xcassets",
+    "**/*.xcassets/**/*",
     "**/*.bundle",
     "**/*.bundle/**/*",
     "**/*.xcdatamodel",
     "**/*.xcdatamodel/**/*",
+    "**/*.framework",
+    "**/*.framework/**/*",
+    "**/*.xcframework",
+    "**/*.xcframework/**/*",
     "**/*.m",
     "**/*.mm",
     "**/*.h",
@@ -233,4 +317,6 @@ async function storeMtime(
   }
   await fs.writeFile(jsonFile, JSON.stringify(json))
   core.info(`Stored ${stored} file's mtimes`)
+  const end = new Date()
+  core.info(`[${util.getHHmmss(end)}]: ${util.elapsed(begin, end)}s`)
 }

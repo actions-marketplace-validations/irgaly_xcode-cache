@@ -21,7 +21,7 @@ async function main() {
     }
     const runnerOs = process.env['RUNNER_OS']
     if (runnerOs != 'macOS') {
-      throw new Error(`setup-xcode supports only macOS, current host is ${runnerOs}`)
+      throw new Error(`xcode-cache supports only macOS, current host is ${runnerOs}`)
     }
     const input = getInput()
     core.info('Input parameters:')
@@ -30,21 +30,25 @@ async function main() {
     })
     core.info('')
     const derivedDataDirectory = await input.getDerivedDataDirectory()
-    const derivedDataRestored = await restoreDerivedData(
+    const derivedDataRestoredKey = await restoreDerivedData(
       derivedDataDirectory,
       input.key,
       input.restoreKeys
     )
+    const derivedDataRestored = (derivedDataRestoredKey != undefined)
     core.info('')
     const sourcePackagesDirectory = await input.getSourcePackagesDirectory()
+    let sourcePackagesRestoredKey: string | undefined = undefined
+    let sourcePackagesRestored = false
     if (sourcePackagesDirectory == null) {
       core.info(`There are no SourcePackages directory in DerivedData, skip restoring SourcePackages`)
     } else {
-      await restoreSourcePackages(
+      sourcePackagesRestoredKey = await restoreSourcePackages(
         sourcePackagesDirectory,
         await input.getSwiftpmCacheKey(),
         input.swiftpmCacheRestoreKeys
       )
+      sourcePackagesRestored = (sourcePackagesRestoredKey != undefined)
     }
     core.info('')
     if (!derivedDataRestored) {
@@ -55,6 +59,23 @@ async function main() {
         input.restoreMtimeTargets,
         input.verbose
       )
+    }
+    core.info('')
+    core.info(`set-output: restored = ${derivedDataRestored}`)
+    core.setOutput('restored', derivedDataRestored.toString());
+    if (derivedDataRestored) {
+      core.info(`set-output: restored-key = ${derivedDataRestoredKey}`)
+      core.setOutput('restored-key', derivedDataRestoredKey);
+    } else {
+      core.info(`restored-key will not set`)
+    }
+    core.info(`set-output: swiftpm-restored = ${sourcePackagesRestored}`)
+    core.setOutput('swiftpm-restored', sourcePackagesRestored.toString());
+    if (sourcePackagesRestored) {
+      core.info(`set-output: swiftpm-restored-key = ${sourcePackagesRestoredKey}`)
+      core.setOutput('swiftpm-restored-key', sourcePackagesRestoredKey);
+    } else {
+      core.info(`swiftpm-restored-key will not set`)
     }
   } catch (error) {
     if (error instanceof Error) {
@@ -67,8 +88,9 @@ async function restoreDerivedData(
   derivedDataDirectory: string,
   key: string,
   restoreKeys: string[]
-): Promise<boolean> {
-  core.info(`Restoring DerivedData...`)
+): Promise<string | undefined> {
+  const begin = new Date()
+  core.info(`[${util.getHHmmss(begin)}]: Restoring DerivedData...`)
   core.info(`cache key:\n  ${key}`)
   core.info(`restore keys:\n  ${restoreKeys.join('\n')}`)
   const restoreKey = await cache.restoreCache([derivedDataDirectory], key, restoreKeys)
@@ -80,15 +102,18 @@ async function restoreDerivedData(
     core.saveState('deriveddata-restorekey', restoreKey)
     core.info(`Restored to:\n  ${derivedDataDirectory}`)
   }
-  return restored
+  const end = new Date()
+  core.info(`[${util.getHHmmss(end)}]: ${util.elapsed(begin, end)}s`)
+  return restoreKey
 }
 
 async function restoreSourcePackages(
   sourcePackagesDirectory: string,
   key: string,
   restoreKeys: string[]
-): Promise<boolean> {
-  core.info(`Restoring SourcePackages...`)
+): Promise<string | undefined> {
+  const begin = new Date()
+  core.info(`[${util.getHHmmss(begin)}]: Restoring SourcePackages...`)
   core.info(`cache key:\n  ${key}`)
   core.info(`restore keys:\n  ${restoreKeys.join('\n')}`)
   const restoreKey = await cache.restoreCache([sourcePackagesDirectory], key, restoreKeys)
@@ -100,7 +125,9 @@ async function restoreSourcePackages(
     core.saveState('sourcepackages-restorekey', restoreKey)
     core.info(`Restored to:\n  ${sourcePackagesDirectory}`)
   }
-  return restored
+  const end = new Date()
+  core.info(`[${util.getHHmmss(end)}]: ${util.elapsed(begin, end)}s`)
+  return restoreKey
 }
 
 async function restoreMtime(
@@ -108,7 +135,8 @@ async function restoreMtime(
   restoreMtimeTargets: string[],
   verbose: boolean
 ) {
-  core.info(`Restoring mtime...`)
+  const begin = new Date()
+  core.info(`[${util.getHHmmss(begin)}]: Restoring mtime...`)
   let changed = 0
   let skipped: string[] = []
   const jsonFile = path.join(derivedDataDirectory, 'xcode-cache-mtime.json')
@@ -172,5 +200,7 @@ async function restoreMtime(
       }
     }
     core.info(`Restored ${changed} file's mtimes.`)
+    const end = new Date()
+    core.info(`[${util.getHHmmss(end)}]: ${util.elapsed(begin, end)}s`)
   }
 }

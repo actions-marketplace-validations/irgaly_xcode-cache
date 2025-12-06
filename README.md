@@ -14,7 +14,7 @@ A GitHub Action to store Xcode's Build Cache for incremental build on CI.
 Use this action in GitHub Actions workflow.
 
 ```yaml
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       ...
     - uses: irgaly/xcode-cache@v1
       with:
@@ -140,12 +140,20 @@ this action will store these file's mtime attributes:
 * `**/*.xib`
 * `**/*.storyboard`
 * `**/*.strings`
+* `**/*.xcstrings`
 * `**/*.plist`
+* `**/*.intentdefinition`
+* `**/*.json`
 * `**/*.xcassets`
+* `**/*.xcassets/**/*`
 * `**/*.bundle`
 * `**/*.bundle/**/*`
 * `**/*.xcdatamodel`
 * `**/*.xcdatamodel/**/*`
+* `**/*.framework`,
+* `**/*.framework/**/*`,
+* `**/*.xcframework`,
+* `**/*.xcframework/**/*`,
 * `**/*.m`
 * `**/*.mm`
 * `**/*.h`
@@ -156,6 +164,22 @@ this action will store these file's mtime attributes:
 * `**/*.hxx`
 
 You can add any target by glob pattern with `restore-mtime-targets` input.
+
+# Delete old incremental build cache when job succeeded
+
+If `delete-used-deriveddata-cache: true` is configured, xcode-cache will delete old DerivedData
+cache from GitHub Actions Cache Storage.
+This will help you to manage your repository's Cache Storage space.
+
+This operation will use GitHub Actions API for deleting cache.
+**Be sure `actions: write` has granted to your token.**
+
+* [REST API | GitHub Actions Cache](https://docs.github.com/en/rest/actions/cache?apiVersion=2022-11-28#delete-github-actions-caches-for-a-repository-using-a-cache-key)
+* [GitHub Actions | Assigning permissions to jobs](https://docs.github.com/en/actions/using-jobs/assigning-permissions-to-jobs)
+
+Please see the official document of GitHub Actions Cache management for more details.
+
+* [GitHub Docs | Caching dependencies to speed up workflows | Force deleting cache entries](https://docs.github.com/en/actions/using-workflows/caching-dependencies-to-speed-up-workflows#force-deleting-cache-entries)
 
 # All Options
 
@@ -182,7 +206,7 @@ You can add any target by glob pattern with `restore-mtime-targets` input.
 
         # SourcePackages directory path
         #
-        # optional, multiline
+        # optional
         # default: {DerivedDirectory path}/SourcePackages
         sourcepackages-directory: { your SourcePackages directory path }
 
@@ -222,12 +246,63 @@ You can add any target by glob pattern with `restore-mtime-targets` input.
         # default: true
         use-default-mtime-targets: true
 
+        # Delete the DerivedData cache that used for this build,
+        # only when this job has succeeded, the cache has hit from `restore-keys` and
+        # the Cache belongs to same branch from this job.
+        #
+        # actions: write permission is required for your token to use this feature.
+        #
+        # Cache will be deleted by GitHub Actions API
+        # https://docs.github.com/en/rest/actions/cache?apiVersion=2022-11-28#delete-github-actions-caches-for-a-repository-using-a-cache-key
+        #
+        # optional
+        # default: false
+        delete-used-deriveddata-cache: false
+
+        # The GitHub Token for deleting DerivedData cache
+        # This is used to access GitHub Actions Cache API
+        #
+        # optional
+        # default: ${{ github.token }}
+        token: ${{ github.token }}
+
         # More detailed logging
         #
         # optional
         # default: false
         verbose: false
 
+        # Cache read-only mode
+        # If true, the action will only read from the cache and not write to it
+        #
+        # optional
+        # default: false
+        cache-read-only: false
 ```
 
+# Outputs
 
+This action
+provides
+some [step outputs](https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions#setting-an-output-parameter).
+
+For example, you can use these values by `${{ steps.{step id}.outputs.restored }}`
+
+| key                    | value                                                                                                                        |
+|------------------------|------------------------------------------------------------------------------------------------------------------------------|
+| `restored`             | `true`: DerivedData restored from cache (includes restore-keys hit) / `false`: DerivedData cache not hit                     |
+| `restored-key`         | The key of DerivedData cache hit. This will not set when cache has not hit.                                                  |
+| `swiftpm-restored`     | `true`: SourcePackages restored from cache (includes swiftpm-cache-restore-keys hit) / `false`: SourcePackages cache not hit |
+| `swiftpm-restored-key` | The key of SourcePackages cache hit. This will not set when cache has not hit.                                               |
+
+# Appendix
+
+## Ruby one-liner for restoring mtimes
+
+This is a ruby one-liner for restoring mtimes from `xcode-cache-mtime.json`.
+You may use this one-liner if you'd like to restore at any time you want in GitHub Actions workflow
+step.
+
+```shell
+% ruby -rjson -rdigest -rbigdecimal -e 'JSON.parse(STDIN.read).each{|i|f=i["path"];t=BigDecimal(i["time"]);File.utime(t,t,f)if(File.exist?(f)&&(File.directory?(f)?Digest::SHA256.new.yield_self{|s|Dir.children(f).sort.each{s.update(_1)};s.hexdigest}:Digest::SHA256.file(f).hexdigest)==i["sha256"])}' < DerivedData/xcode-cache-mtime.json
+```

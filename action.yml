@@ -37,15 +37,27 @@ inputs:
     required: false
     default: ''
   use-default-mtime-targets:
-    description: 'process default mtime targets: **/*.swift , **/*.xib , **/*.storyboard , **/*.strings , **/*.plist , **/*.xcassets , **/*.bundle , **/*.bundle/**/*, **/*.xcdatamodel , **/*.xcdatamodel/**/* , **/*.m , **/*.mm , **/*.h , **/*.c , **/*.cc , **/*.cpp , **/*.hpp , **/*.hxx'
+    description: 'process default mtime targets: **/*.swift , **/*.xib , **/*.storyboard , **/*.strings , **/*.xcstrings, **/*.plist , **/*.xcassets , **/*.xcassets/**/* , **/*.bundle , **/*.bundle/**/*, **/*.xcdatamodel , **/*.xcdatamodel/**/* , **/*.framework , **/*.framework/**/* , **/*.xcframework , **/*.xcframework/**/* , **/*.m , **/*.mm , **/*.h , **/*.c , **/*.cc , **/*.cpp , **/*.hpp , **/*.hxx'
     required: false
     default: 'true'
+  delete-used-deriveddata-cache:
+    description: 'delete the DerivedData cache used for this job, when job has succeeded.'
+    required: false
+    default: 'false'
+  token:
+    description: 'an GitHub Token for deleting the DerivedData operation. default: github.token'
+    required: false
+    default: ${{ github.token }}
   verbose:
     description: 'enable verbose logging'
     required: false
     default: 'false'
+  cache-read-only:
+    description: 'When true, existing entries will be read from the cache but no entries will be written.'
+    required: false
+    default: 'false'
 runs:
-  using: 'node16'
+  using: 'node24'
   main: 'dist/main/index.js'
   post: 'dist/post/index.js'
   post-if: success()
