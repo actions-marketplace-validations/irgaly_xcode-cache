@@ -9,9 +9,9 @@ jobs:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           repository: josepharhar/nanoutimes
-      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.2.0
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version: 24.13.0
+          node-version: 24.14.1
       - id: artifact-name
         run: |
           echo "name=$(node -p '`node-v${process.versions.modules}-darwin-${os.arch()}`')" >> "$GITHUB_OUTPUT"
@@ -20,7 +20,7 @@ jobs:
           node-gyp configure && node-gyp build
           mkdir -p "artifact/${{ steps.artifact-name.outputs.name }}"
           mv build/Release/nanoutimes.node "artifact/${{ steps.artifact-name.outputs.name }}"
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: ${{ steps.artifact-name.outputs.name }}
           path: artifact
